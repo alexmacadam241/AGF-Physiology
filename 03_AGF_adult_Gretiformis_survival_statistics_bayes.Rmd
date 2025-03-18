@@ -1,0 +1,457 @@
+---
+title: "03_AGF_adult_Gretiformis_survival_statistics_ bayes"
+author: "Alex Macadam"
+date: "2023-11-23"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Load packages
+```{r}
+set.seed(123)
+library(tidyverse) #for data wrangling
+library(car)       #for regression diagnostics
+library(broom)     #for tidy output
+library(ggfortify) #for model diagnostics
+library(sjPlot)    #for outputs
+library(knitr)     #for kable
+library(effects)   #for partial effects plots
+library(emmeans)   #for estimating marginal means
+library(MASS)      #for glm.nb
+library(MuMIn)     #for AICc
+library(brms)
+library(broom.mixed)
+library(tidybayes)
+library(bayesplot)
+library(rstanarm)
+library(cmdstanr)
+library(ggeffects)
+library(rstan)
+library(DHARMa)
+library(ggridges)
+library(easystats)     #framework for stats, modelling and visualisation
+library(patchwork)
+source('helperFunctions.R')
+
+theme_Publication <- function(base_size=14, base_family="helvetica") {
+      library(grid)
+      library(ggthemes)
+      (theme_foundation(base_size=base_size, base_family=base_family)
+       + theme(plot.title = element_text(face = "bold",
+                                         size = rel(1.2), hjust = 0.5),
+               text = element_text(),
+               panel.background = element_rect(colour = NA),
+               plot.background = element_rect(colour = NA),
+               panel.border = element_rect(colour = NA),
+               axis.title = element_text(face = "bold",size = rel(1)),
+               axis.title.y = element_text(angle=90,vjust =2),
+               axis.title.x = element_text(vjust = -0.2),
+               axis.text = element_text(), 
+               axis.line = element_line(colour="black"),
+               axis.ticks = element_line(),
+               panel.grid.major = element_line(colour="#f0f0f0"),
+               panel.grid.minor = element_blank(),
+               legend.key = element_rect(colour = NA),
+               legend.position = "bottom",
+               legend.direction = "horizontal",
+               legend.key.size= unit(0.2, "cm"),
+               legend.margin = unit(0, "cm"),
+               legend.title = element_text(face="italic"),
+               plot.margin=unit(c(10,5,5,5),"mm"),
+               strip.background=element_rect(colour="#f0f0f0",fill="#f0f0f0"),
+               strip.text = element_text(face="bold")
+          ))
+}
+```
+
+```{r}
+# Read in data
+survival.gon <- read.csv('data/Adult-survival.csv', header=T) |>
+  filter(Species == "Goniastrea", Timepoint == "4") |> #remove other species data
+  mutate(Survival=as.numeric(Survival), Bleaching_D=as.numeric(Bleaching_D), TissueArea_cm2=as.numeric(TissueArea_cm2)) |> #format columns
+  mutate(Tank = factor(Tank),
+                         Position = factor(Position),
+                         Stick = factor(Stick),
+                         Genotype = factor(Genotype),
+                         Temperature = factor(Temperature, levels=c('Ambient', 'Hot')),
+                         Population = factor(Population, levels=c('Jewell','Parke','Switzer')),
+                         Timepoint = factor(Timepoint)
+                        ) # change columns to factors
+```
+
+# Fit the model
+## Random intercept
+form
+```{r}
+survival.form <- bf(Survival | trials(1) ~ Population * Temperature + (1|Tank),
+                  family=binomial(link='logit'))
+```
+
+priors
+```{r fitModel2h1, results='markdown', eval=TRUE, mhidden=TRUE, cache=TRUE}
+priors <-
+    prior(normal(1.5, 5), class = 'Intercept') +
+    prior(normal(0, 5), class = 'b') +
+    prior(student_t(3, 0, 2.5), class = 'sd') 
+```
+
+run model
+```{r}
+survival.brm <- brm(survival.form,
+                  data = survival.gon,
+                  prior = priors,
+                  sample_prior = 'yes',
+                  iter = 5000,
+                  warmup = 2500,
+                  chains = 3, cores = 3,
+                  thin = 5,
+                  control = list(adapt_delta = 0.99, max_treedepth = 20),
+                  refresh = 0,
+                  backend = "cmdstanr"
+                  )
+```
+
+conditional effects
+```{r}
+survival.brm %>%
+    conditional_effects() %>%
+    plot(points = TRUE)
+```
+
+rerun model
+```{r}
+survival.brm2 <- update(survival.brm,
+                      sample_prior = 'yes',
+                      cores = 3,
+                      refresh = 0)
+```
+
+updated conditional effects
+```{r}
+ce_survival_ret<- survival.brm2 %>%
+    conditional_effects() %>%
+    plot(points = TRUE)
+ce_survival_ret
+ce_survival_ret<- ce_survival_ret$`Population:Temperature`$data |>
+  mutate(Species = "G. retiformis")
+```
+
+plot conditional effects
+```{r}
+pd <- position_dodge(width=0.2)
+pal <- wes_palette("Zissou1", 5, type = "discrete")
+scalesize <- function(x) sprintf("%.1f", x)
+
+#plot survival
+survival_ret_plot1<- ce_survival_ret |>
+  ggplot(aes(x=Population, y=estimate__, shape=Temperature, color = Temperature)) +
+  geom_pointrange(aes(ymin=lower__, ymax=upper__, color=Temperature), position=position_dodge(width=0.2))+
+  scale_y_continuous(limits=c(0,1), breaks=seq(0,1,0.2), labels = scalesize)+
+  scale_color_manual(values=pal[c(1,5)]) +
+  labs(x='Reef Cross', y="Survival (%)")+
+  theme_Publication() 
+  theme(legend.key.height = unit(0.3, "cm"),
+  #      legend.margin=margin(0,0,0,0),
+  #      legend.box.margin=margin(0,0,0,0),
+  #      plot.margin = margin(rep(0.5,4)),
+  #      legend.position="right",
+  #      legend.direction = "vertical",
+        axis.text.x = element_text(angle = 90)
+  #      axis.text.y = element_text(angle = 90)
+        )
+survival_ret_plot1
+```
+
+View prior and posterior
+```{r}
+survival.brm2 %>% SUYR_prior_and_posterior()
+```
+
+Trace plots
+```{r}
+survival.brm2$fit |> stan_trace()
+```
+
+Autocorrelation
+```{r}
+survival.brm2$fit |> stan_ac()
+```
+
+Rhat
+```{r}
+survival.brm2$fit |> stan_rhat()
+```
+
+Effective sample size
+```{r}
+survival.brm2$fit |> stan_ess()
+```
+
+Density overlay
+```{r}
+survival.brm2 |> pp_check(type = 'dens_overlay', nsamples = 250)
+```
+
+Dharma residuals
+```{r}
+survival.resids<- make_brms_dharma_res(survival.brm2, integerResponse = FALSE)
+wrap_elements(~testUniformity(survival.resids)) +
+wrap_elements(~plotResiduals(survival.resids, form = factor(rep(1,nrow(survival))))) +
+wrap_elements(~plotResiduals(survival.resids, quantreg = FALSE))+
+wrap_elements(~testDispersion(survival.resids))
+```
+
+Summarise model
+back transform from logit scale: by exponentiating on the odds scale. comparing to 1
+```{r}
+survival.brm2 |>
+  as_draws_df() |>
+  mutate(across(everything(), exp)) |>
+  summarise_draws(
+    median,
+    HDInterval::hdi,
+    Pl = ~mean(.x < 1),
+    Pg = ~mean(.x > 1),
+    rhat,
+    ess_bulk,
+    ess_tail
+    ) |>
+  knitr::kable()
+```
+
+Probability scale
+```{r}
+survival.brm2 |>
+  emmeans(~Population * Temperature, type = "response")
+```
+
+Planned contrast:
+Jewell
+Parke
+Switzer
+
+```{r}
+cmat=cbind(
+  "Jew vs Not" = c(0, 0, 0, -1, 1/2, 1/2),
+  "Swi vs Not" = c(0, 0, 0, -1/2, -1/2, 1),
+  "Jewell" = c(-1, 0, 0, 1, 0, 0),
+  "Parke" = c(0, -1, 0, 0, 1, 0),
+  "Switzer" = c(0, 0, -1, 0, 0, 1)
+)
+
+survival.em<- survival.brm2 |>
+  emmeans(~Population * Temperature, type = 'response') |>
+  contrast(method=list(cmat)) |>
+  gather_emmeans_draws() |>
+  mutate(across(everything(), exp)) |>
+#on odds ratio scale
+  dplyr::summarise(median_hdci(.value),
+            Pl = mean(.value < 1),
+            Pg = mean(.value > 1)
+            )
+survival.em
+```
+
+#Plot
+get variables
+```{r}
+survival.brm2 %>% get_variables()
+```
+
+```{r}
+survival.brm2 %>%
+  gather_draws(`b_Intercept.*|b_Population.*`, regex = TRUE) %>%
+  ggplot() +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  stat_slab(aes(
+    x = .value, y = .variable,
+    fill = stat(ggdist::cut_cdf_qi(cdf,
+      .width = c(0.5, 0.8, 0.95),
+      labels = scales::percent_format()
+    ))
+  ), color = "black") +
+  scale_fill_brewer("Interval", direction = -1, na.translate = FALSE)
+```
+
+####
+Hot only
+```{r}
+survival_hot <- survival.gon |>
+  filter(Temperature == "Hot")
+```
+
+form
+```{r}
+survival.form <- bf(Survival | trials(1) ~ Population + (1|Tank),
+                  family=binomial(link='logit'))
+```
+
+priors
+```{r fitModel2h1, results='markdown', eval=TRUE, mhidden=TRUE, cache=TRUE}
+priors <-
+    prior(normal(1.5, 5), class = 'Intercept') +
+    prior(normal(0, 5), class = 'b') +
+    prior(student_t(3, 0, 2.5), class = 'sd')
+```
+
+run model- n
+```{r}
+survival.brm3 <- brm(survival.form, 
+                  data = survival_hot,
+                  prior = priors,
+                  sample_prior = 'yes',
+                  iter = 5000,
+                  warmup = 2500,
+                  chains = 3, cores = 3,
+                  thin = 5,
+                  control = list(adapt_delta = 0.99, max_treedepth = 20),
+                  refresh = 0,
+                  backend = "cmdstanr"
+                  )
+```
+
+conditional effects
+```{r}
+survival.brm3 %>%
+    conditional_effects() %>%
+    plot(points = TRUE)
+```
+
+View prior and posterior
+```{r}
+survival.brm3 %>% SUYR_prior_and_posterior()
+```
+
+Trace plots
+```{r}
+survival.brm3$fit |> stan_trace()
+```
+
+Autocorrelation
+```{r}
+survival.brm3$fit |> stan_ac()
+```
+
+Rhat
+```{r}
+survival.brm3$fit |> stan_rhat()
+```
+
+Effective sample size
+```{r}
+survival.brm3$fit |> stan_ess()
+```
+
+Density overlay
+```{r}
+survival.brm3 |> pp_check(type = 'dens_overlay', nsamples = 250)
+```
+
+Dharma residuals
+```{r}
+survival.resids<- make_brms_dharma_res(survival.brm4, integerResponse = FALSE)
+wrap_elements(~testUniformity(survival.resids)) +
+wrap_elements(~plotResiduals(survival.resids, form = factor(rep(1,nrow(survival))))) +
+wrap_elements(~plotResiduals(survival.resids, quantreg = FALSE))+
+wrap_elements(~testDispersion(survival.resids))
+```
+
+Summarise model
+back transform from logit scale: by exponentiating on the odds scale. comparing to 1
+```{r}
+survival.brm3 |>
+  as_draws_df() |>
+  mutate(across(everything(), exp)) |>
+  summarise_draws(
+    median,
+    HDInterval::hdi,
+    Pl = ~mean(.x < 1),
+    Pg = ~mean(.x > 1),
+    rhat,
+    ess_bulk,
+    ess_tail
+    ) |>
+  knitr::kable()
+```
+
+Probability scale
+```{r}
+survival.brm3 |>
+  emmeans(~Population, type = "response")
+```
+
+Planned contrast:
+Jewell
+Parke
+Switzer
+
+```{r}
+cmat=cbind(
+  "Jew vs Not" = c(-1, 1/2, 1/2),
+  "Swi vs Not" = c(-1/2, -1/2, 1)
+)
+
+survival.em<- survival.brm3 |>
+  emmeans(~Population, type = 'response') |>
+  contrast(method=list(cmat)) |>
+  gather_emmeans_draws() |>
+  mutate(across(everything(), exp)) |>
+#on odds ratio scale
+  summarise(median_hdci(.value),
+            Pl = mean(.value < 1),
+            Pg = mean(.value > 1)
+            )
+survival.em
+```
+
+#Plot
+get variables
+```{r}
+survival.brm3 %>% get_variables()
+```
+
+```{r}
+surv.plot<- survival.brm3 %>%
+  emmeans(~Population) %>%
+  gather_emmeans_draws() %>%
+    ggplot() +
+  #geom_vline(xintercept = 0, linetype = "dashed") +
+  stat_slab(aes(
+    x = .value, y = Population,
+    fill = stat(ggdist::cut_cdf_qi(cdf,
+      .width = c(0.5, 0.8, 0.95),
+      labels = scales::percent_format()
+    ))
+  ), color = "black") +
+  scale_fill_brewer("Interval", direction = -1, na.translate = FALSE) +
+  theme_classic() +
+  labs(x = "Survival", y = "Treatment")
+surv.plot
+```
+
+###
+Plot
+```{r}
+ce_survival<- rbind(ce_survival_ten, ce_survival_hya, ce_survival_ret) |>
+  mutate(Species = factor(Species, levels = c("A. kenti", "A. hyacinthus", "G. retiformis")))
+
+library(patchwork)
+survival_ten_plot1 + survival_hya_plot1 + survival_ret_plot1 +
+  #plot_annotation(tag_levels = 'A') + 
+  plot_layout(guides = 'collect') +
+  theme(legend.position='bottom')
+
+#plot survival
+survival_plot1<- ce_survival |>
+  ggplot(aes(x=Population, y=estimate__, shape=Temperature, color = Temperature)) +
+  geom_pointrange(aes(ymin=lower__, ymax=upper__, color=Temperature), position=position_dodge(width=0.2)) +
+  scale_y_continuous(limits=c(0.2,1.2), breaks=seq(0.2,1.2,0.2), labels = scalesize) +
+  scale_color_manual(values=pal[c(1,5)]) +
+  facet_wrap(~Species, drop = TRUE, scales = "free", ncol = 1) +
+  labs(x='Reef Cross', y="Survival") +
+  theme_Publication()
+survival_plot1
+```
