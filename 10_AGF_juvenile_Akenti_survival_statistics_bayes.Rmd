@@ -382,7 +382,7 @@ priors <-
 run model- n
 ```{r}
 survival.brm4 <- brm(survival.form,
-                  data = survival_hot,
+                  data = survival.hot,
                   prior = priors,
                   sample_prior = 'yes',
                   iter = 5000,
