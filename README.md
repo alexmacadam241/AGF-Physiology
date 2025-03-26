@@ -1,4 +1,4 @@
-# Assessing the potential for “assisted gene flow” to enhance heat tolerance of multiple coral genera over three key phenotypic traits
+# Assessing the potential for “assisted gene flow” to enhance heat tolerance of multiple coral genera over three key phenotypic traits 
 
 R code to accompany the paper
 
